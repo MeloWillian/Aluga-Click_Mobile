@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: alugaclick-postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 12345678
+    ports:
+      - "5432:5432"
+    volumes:
+      - alugaclick_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  alugaclick_pgdata:
