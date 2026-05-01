@@ -1,4 +1,4 @@
-# 🏠 Aluga-Click
+# Aluga-Click
 
 O Aluga Click é um sistema de informatização do processo de locação de veículos, projetado para gerenciar de forma integrada as operações da locadora, o ciclo de vida da frota e o relacionamento com os clientes. A plataforma cobre desde o cadastro detalhado de veículos e clientes até a gestão completa de reservas, locações, devoluções, manutenção e renovação da frota.
 
@@ -10,7 +10,7 @@ Com regras claras de negócio o Aluga Click garante controle operacional, otimiz
 
 ---
 
-## 🛠 Pré-requisitos
+## Pré-requisitos
 
 Para garantir a execução correta dos scripts de automação, seu ambiente deve possuir as seguintes ferramentas instaladas globalmente:
 
@@ -24,7 +24,7 @@ Para garantir a execução correta dos scripts de automação, seu ambiente deve
 
 ---
 
-## 🚀 Instalação e Execução (Quick Start)
+## Instalação e Execução (Quick Start)
 
 Siga os passos abaixo para configurar o ambiente do zero.
 
@@ -47,8 +47,8 @@ pnpm dev
 
 Este comando iniciará simultaneamente:
 
-🐘 Banco de Dados (PostgreSQL na porta 5432)
+Banco de Dados (PostgreSQL na porta 5432)
 
-☕ Backend (Spring Boot na porta 8080)
+Backend (Spring Boot na porta 8080)
 
-📱 Frontend (Expo na porta 8081)
+Frontend (Expo na porta 8081)
