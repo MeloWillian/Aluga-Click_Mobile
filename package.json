@@ -2,7 +2,7 @@
   "name": "Aluga-Click",
   "version": "1.0.0",
   "scripts": {
-    "dev": "concurrently -n \"DOCKER,BACK,FRONT\" -c \"blue,green,magenta\" \"pnpm:db:up\" \"pnpm:back\" \"pnpm:front\"",
+    "dev": "concurrently --raw -n \"DOCKER,BACK,FRONT\" -c \"blue,green,magenta\" \"pnpm:db:up\" \"pnpm:back\" \"pnpm:front\"",
 
     "db:up": "docker compose up",
     "db:down": "docker compose down",
