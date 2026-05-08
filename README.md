@@ -34,13 +34,23 @@ git clone https://github.com/MeloWillian/Aluga-Click.git
 cd Aluga-Click 
 ```
 
-### 2. Setup Inicial (Apenas na 1ª vez)
+### 2. Setup Inicial
 Execute o comando de configuração. Ele instalará as dependências da raiz e do frontend, além de criar automaticamente o arquivo `.env` necessário.
 ```bash
 pnpm run setup
 ```
 
-### 3. Iniciar o Ambiente
+### 3. Instalar dependências
+
+```bash
+pnpm i
+
+cd frontend
+
+pnpm i
+```
+
+### 4. Iniciar o Sistema na raiz
 ```bash
 pnpm dev
 ```
@@ -52,3 +62,6 @@ Banco de Dados (PostgreSQL na porta 5432)
 Backend (Spring Boot na porta 8080)
 
 Frontend (Expo na porta 8081)
+
+OBS.:
+- Identificador do cliente para cadastro de reserva é 2
