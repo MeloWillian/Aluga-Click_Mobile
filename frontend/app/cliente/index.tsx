@@ -25,6 +25,7 @@ import {
   maskTimeInput,
   timeInputToIsoTime,
 } from "../../lib/input-masks";
+import { Link } from "expo-router";
 import {
   clearClientSearchDraft,
   createReserva,
@@ -372,6 +373,12 @@ export default function ClientHome() {
         </Text>
       </View>
 
+      <Link href="/cliente/reservas" asChild>
+        <Pressable style={styles.secondaryNavButton}>
+          <Text style={styles.secondaryNavButtonText}>Ver minhas reservas</Text>
+        </Pressable>
+      </Link>
+
       {categoriesState ? (
         <Text style={styles.banner}>{categoriesState}</Text>
       ) : null}
@@ -702,6 +709,16 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: "#fff",
+    fontWeight: "700",
+  },
+  secondaryNavButton: {
+    backgroundColor: "#e2e8f0",
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  secondaryNavButtonText: {
+    color: "#0f172a",
     fontWeight: "700",
   },
   resultCard: {

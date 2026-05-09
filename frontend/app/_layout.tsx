@@ -23,6 +23,10 @@ export default function RootLayout() {
         options={{ title: "Veículo" }}
       />
       <Stack.Screen name="cliente/index" options={{ title: "Reserva" }} />
+      <Stack.Screen
+        name="cliente/reservas"
+        options={{ title: "Minhas reservas" }}
+      />
     </Stack>
   );
 }

@@ -9,6 +9,7 @@ export const OFFLINE_TTLS = {
   frota: 15 * 60 * 1000,
   veiculo: 24 * 60 * 60 * 1000,
   disponibilidade: 5 * 60 * 1000,
+  reservas: 15 * 60 * 1000,
   rascunho: 30 * 24 * 60 * 60 * 1000,
 } as const;
 
@@ -19,8 +20,11 @@ export const OFFLINE_KEYS = {
   disponibilidade: (key: string) =>
     `${STORAGE_PREFIX}:cache:disponibilidade:${key}`,
   disponibilidadeIndex: `${STORAGE_PREFIX}:cache:disponibilidade-index`,
+  reservas: (clienteId: number) =>
+    `${STORAGE_PREFIX}:cache:reservas:${clienteId}`,
   vehicleDraft: (key: string) => `${STORAGE_PREFIX}:draft:vehicle:${key}`,
   clientSearchDraft: `${STORAGE_PREFIX}:draft:client-search`,
+  clientReservationsDraft: `${STORAGE_PREFIX}:draft:client-reservations`,
   queue: `${STORAGE_PREFIX}:queue`,
 } as const;
 

@@ -71,6 +71,36 @@ export type ReservaFiltro = {
   categoriaId: number;
 };
 
+export type ReservaCliente = {
+  id: number;
+  nome?: string | null;
+};
+
+export type ReservaVeiculo = {
+  id: number;
+  placa?: string | null;
+  modelo?: string | null;
+  marca?: string | null;
+  status?: string | null;
+  categoria?: {
+    id: number;
+    nome?: string | null;
+  } | null;
+};
+
+export type Reserva = {
+  id: number | string;
+  dataInicio: string;
+  dataFim: string;
+  status: string;
+  tipoCobranca: string;
+  cliente?: ReservaCliente | null;
+  veiculo?: ReservaVeiculo | null;
+  localOnly?: boolean;
+  syncState?: "pending" | "synced";
+  localMutationId?: string;
+};
+
 export type VehicleFormDraft = {
   placa: string;
   modelo: string;
@@ -98,6 +128,10 @@ export type ClientSearchDraft = {
   };
   selectedVehicleId: string;
   vehicles: Veiculo[];
+};
+
+export type ClientReservationsDraft = {
+  clienteId: string;
 };
 
 export type PendingSyncResult = {
@@ -237,6 +271,67 @@ async function writeVehicleCaches(vehicle: Veiculo) {
   await writeCachedEntry(OFFLINE_KEYS.frota, updatedFleet, OFFLINE_TTLS.frota);
 }
 
+function toCachedReserva(
+  payload: ReservaPayload,
+  reserva?: Partial<Reserva> | null,
+) {
+  const hasServerId = typeof reserva?.id === "number";
+  const isLocalId =
+    typeof reserva?.id === "string" && reserva.id.startsWith("local-");
+  const id = hasServerId
+    ? (reserva?.id as number)
+    : typeof reserva?.id === "string"
+      ? reserva.id
+      : `local-${payload.cliente.id}-${Date.now()}`;
+
+  return {
+    id,
+    dataInicio: payload.dataInicio,
+    dataFim: payload.dataFim,
+    status: reserva?.status ?? payload.status ?? "PENDENTE",
+    tipoCobranca: reserva?.tipoCobranca ?? payload.tipoCobranca,
+    cliente: reserva?.cliente ?? {
+      id: payload.cliente.id,
+    },
+    veiculo: reserva?.veiculo ?? {
+      id: payload.veiculo.id,
+    },
+    localOnly: !hasServerId || isLocalId,
+    syncState: hasServerId && !isLocalId ? "synced" : "pending",
+    localMutationId: reserva?.localMutationId,
+  } satisfies Reserva;
+}
+
+async function upsertClientReservationsCache(
+  clienteId: number,
+  reserva: Reserva,
+) {
+  const cache = await readCachedEntry<Reserva[]>(
+    OFFLINE_KEYS.reservas(clienteId),
+  );
+  const next = cache?.data ?? [];
+  const updated = next.some(
+    (item) =>
+      String(item.id) === String(reserva.id) ||
+      (reserva.localMutationId &&
+        item.localMutationId === reserva.localMutationId),
+  )
+    ? next.map((item) =>
+        String(item.id) === String(reserva.id) ||
+        (reserva.localMutationId &&
+          item.localMutationId === reserva.localMutationId)
+          ? reserva
+          : item,
+      )
+    : [reserva, ...next];
+
+  await writeCachedEntry(
+    OFFLINE_KEYS.reservas(clienteId),
+    updated,
+    OFFLINE_TTLS.reservas,
+  );
+}
+
 async function invalidateAvailabilityCache() {
   const keys = await readJson<string[]>(OFFLINE_KEYS.disponibilidadeIndex);
   if (!keys || keys.length === 0) {
@@ -280,6 +375,7 @@ async function submitVehicleUpdate(id: number, payload: VeiculoPayload) {
 async function submitReservation(
   payload: ReservaPayload,
   availabilityKey?: string,
+  options?: { localMutationId?: string },
 ) {
   const created = await request<unknown>("/api/usuario/reserva", {
     method: "POST",
@@ -291,8 +387,26 @@ async function submitReservation(
   }
 
   await invalidateAvailabilityCache();
+  try {
+    const cachedReserva = toCachedReserva(
+      payload,
+      created as Partial<Reserva> | null,
+    );
+
+    if (options?.localMutationId) {
+      cachedReserva.localMutationId = options.localMutationId;
+    }
+
+    await upsertClientReservationsCache(payload.cliente.id, cachedReserva);
+  } catch {
+    // Keep the reservation flow working even if local storage is broken.
+  }
   return created;
 }
+
+let syncPendingMutationsInFlight:
+  | Promise<{ synced: number; failed: number }>
+  | null = null;
 
 export async function readCachedCategorias() {
   return readCachedEntry<Categoria[]>(OFFLINE_KEYS.categorias);
@@ -308,6 +422,10 @@ export async function readCachedVeiculo(id: number) {
 
 export async function readCachedAvailability(filtro: ReservaFiltro) {
   return readCachedEntry<Veiculo[]>(createAvailabilityKey(filtro));
+}
+
+export async function readCachedClientReservations(clienteId: number) {
+  return readCachedEntry<Reserva[]>(OFFLINE_KEYS.reservas(clienteId));
 }
 
 export async function readVehicleDraft(id: number | "new") {
@@ -337,6 +455,22 @@ export async function clearClientSearchDraft() {
   return removeKey(OFFLINE_KEYS.clientSearchDraft);
 }
 
+export async function readClientReservationsDraft() {
+  return readJson<ClientReservationsDraft>(
+    OFFLINE_KEYS.clientReservationsDraft,
+  );
+}
+
+export async function saveClientReservationsDraft(
+  draft: ClientReservationsDraft,
+) {
+  await writeJson(OFFLINE_KEYS.clientReservationsDraft, draft);
+}
+
+export async function clearClientReservationsDraft() {
+  return removeKey(OFFLINE_KEYS.clientReservationsDraft);
+}
+
 export async function listCategorias() {
   return cacheReadOrFetch<Categoria[]>({
     cacheKey: OFFLINE_KEYS.categorias,
@@ -358,6 +492,14 @@ export async function getVeiculo(id: number) {
     cacheKey: OFFLINE_KEYS.veiculo(id),
     ttlMs: OFFLINE_TTLS.veiculo,
     fetcher: () => request<Veiculo>(`/api/gerente/veiculo/${id}`),
+  });
+}
+
+export async function listClientReservations(clienteId: number) {
+  return cacheReadOrFetch<Reserva[]>({
+    cacheKey: OFFLINE_KEYS.reservas(clienteId),
+    ttlMs: OFFLINE_TTLS.reservas,
+    fetcher: () => request<Reserva[]>(`/api/cliente/${clienteId}/reservas`),
   });
 }
 
@@ -448,6 +590,28 @@ export async function createReserva(
       },
     });
 
+    try {
+      await upsertClientReservationsCache(
+        payload.cliente.id,
+        toCachedReserva(payload, {
+          id: `local-${mutation.id}`,
+          status: payload.status ?? "PENDENTE",
+          tipoCobranca: payload.tipoCobranca,
+          cliente: {
+            id: payload.cliente.id,
+          },
+          veiculo: {
+            id: payload.veiculo.id,
+          },
+          localOnly: true,
+          syncState: "pending",
+          localMutationId: mutation.id,
+        }),
+      );
+    } catch {
+      // Queue entry is still enough to retry later.
+    }
+
     return {
       queued: true,
       mutationId: mutation.id,
@@ -458,6 +622,11 @@ export async function createReserva(
 }
 
 export async function syncPendingMutations() {
+  if (syncPendingMutationsInFlight) {
+    return syncPendingMutationsInFlight;
+  }
+
+  syncPendingMutationsInFlight = (async () => {
   const queue = await readJson<PendingMutation[]>(OFFLINE_KEYS.queue);
 
   if (!queue || queue.length === 0) {
@@ -493,6 +662,7 @@ export async function syncPendingMutations() {
           payload.availabilityFilter
             ? createAvailabilityKey(payload.availabilityFilter)
             : undefined,
+          { localMutationId: mutation.id },
         );
       }
 
@@ -519,4 +689,11 @@ export async function syncPendingMutations() {
   }
 
   return { synced, failed };
+  })();
+
+  try {
+    return await syncPendingMutationsInFlight;
+  } finally {
+    syncPendingMutationsInFlight = null;
+  }
 }
