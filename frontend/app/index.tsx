@@ -24,7 +24,7 @@ export default function Index() {
           <Pressable style={styles.card}>
             <Text style={styles.cardTitle}>Cliente</Text>
             <Text style={styles.cardText}>
-              Buscar veículos e criar reserva.
+              Buscar veículos, criar e acompanhar reservas.
             </Text>
           </Pressable>
         </Link>

@@ -1,5 +1,13 @@
+import { useFocusEffect } from "@react-navigation/native";
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useMemo, useState, type ComponentProps } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+} from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -13,9 +21,19 @@ import {
 import {
   createVeiculo,
   getVeiculo,
+  isPendingSyncResult,
   listCategorias,
+  readCachedCategorias,
+  readCachedVeiculo,
+  readOfflineSummary,
+  readVehicleDraft,
+  clearVehicleDraft,
+  saveVehicleDraft,
+  syncPendingMutations,
   updateVeiculo,
   type Categoria,
+  type PendingMutationSummary,
+  type VehicleFormDraft,
 } from "../../../lib/rental-api";
 import {
   digitsOnly,
@@ -28,18 +46,7 @@ import {
   parseIntegerInput,
 } from "../../../lib/input-masks";
 
-type FormState = {
-  placa: string;
-  modelo: string;
-  marca: string;
-  ano: string;
-  cor: string;
-  quilometragem: string;
-  valorDiaria: string;
-  valorKM: string;
-  status: string;
-  categoriaId: string;
-};
+type FormState = VehicleFormDraft;
 
 const defaultState: FormState = {
   placa: "",
@@ -69,53 +76,168 @@ export default function VehicleFormScreen() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cacheState, setCacheState] = useState<string | null>(null);
+  const [summary, setSummary] = useState<PendingMutationSummary | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const skipDraftSaveRef = useRef(false);
 
-  useEffect(() => {
-    let alive = true;
+  const draftKey = editId ?? "new";
 
-    async function load() {
+  const refreshSummary = useCallback(async () => {
+    setSummary(await readOfflineSummary());
+  }, []);
+
+  const toFormState = useCallback(
+    (vehicle: {
+      placa: string;
+      modelo: string;
+      marca: string;
+      ano: number;
+      cor?: string | null;
+      quilometragem: number;
+      valorDiaria: number;
+      valorKM?: number | null;
+      status: string;
+      categoria?: { id?: number | null } | null;
+    }): FormState => ({
+      placa: maskPlateInput(vehicle.placa),
+      modelo: vehicle.modelo,
+      marca: vehicle.marca,
+      ano: String(vehicle.ano),
+      cor: vehicle.cor ?? "",
+      quilometragem: maskIntegerInput(String(vehicle.quilometragem)),
+      valorDiaria: formatCurrencyValue(vehicle.valorDiaria),
+      valorKM:
+        vehicle.valorKM != null ? formatCurrencyValue(vehicle.valorKM) : "",
+      status: vehicle.status,
+      categoriaId: String(vehicle.categoria?.id ?? ""),
+    }),
+    [],
+  );
+
+  const load = useCallback(async () => {
+    setError(null);
+    let cacheErrorMessage: string | null = null;
+
+    const [categoriesResult, vehicleResult, draftResult, summaryResult] =
+      await Promise.allSettled([
+        readCachedCategorias(),
+        editId ? readCachedVeiculo(editId) : Promise.resolve(null),
+        readVehicleDraft(draftKey),
+        readOfflineSummary(),
+      ]);
+
+    const cachedCategories =
+      categoriesResult.status === "fulfilled" ? categoriesResult.value : null;
+    const cachedVehicle =
+      vehicleResult.status === "fulfilled" ? vehicleResult.value : null;
+    const draft = draftResult.status === "fulfilled" ? draftResult.value : null;
+    const offlineSummary =
+      summaryResult.status === "fulfilled"
+        ? summaryResult.value
+        : { total: 0, pending: 0, failed: 0, hasPending: false };
+
+    if (
+      categoriesResult.status === "rejected" &&
+      categoriesResult.reason instanceof Error
+    ) {
+      cacheErrorMessage = categoriesResult.reason.message;
+    } else if (
+      vehicleResult.status === "rejected" &&
+      vehicleResult.reason instanceof Error
+    ) {
+      cacheErrorMessage = vehicleResult.reason.message;
+    } else if (
+      draftResult.status === "rejected" &&
+      draftResult.reason instanceof Error
+    ) {
+      cacheErrorMessage = draftResult.reason.message;
+    }
+
+    setSummary(offlineSummary);
+
+    if (cachedCategories) {
+      setCategories(cachedCategories.data);
+      setCacheState(
+        cachedCategories.isStale
+          ? "Categorias desatualizadas"
+          : "Categorias em cache",
+      );
+      setLoading(false);
+    }
+
+    if (draft) {
+      setForm(draft);
+      setLoading(false);
+    } else if (cachedVehicle) {
+      setForm(toFormState(cachedVehicle.data));
+      setLoading(false);
+    }
+
+    try {
+      const cats = await listCategorias();
+      setCategories(cats);
+      setCacheState(
+        cacheErrorMessage
+          ? "Categorias atualizadas online após ignorar cache corrompido"
+          : "Categorias atualizadas online",
+      );
+    } catch (err) {
+      if (!cachedCategories) {
+        setError(
+          cacheErrorMessage ??
+            (err instanceof Error
+              ? err.message
+              : "Falha ao carregar formulário."),
+        );
+      } else {
+        setCacheState("Usando categorias em cache");
+      }
+    }
+
+    if (!draft && editId) {
       try {
-        const [cats, vehicle] = await Promise.all([
-          listCategorias(),
-          editId ? getVeiculo(editId) : Promise.resolve(null),
-        ]);
-
-        if (!alive) return;
-
-        setCategories(cats);
-
-        if (vehicle) {
-          setForm({
-            placa: maskPlateInput(vehicle.placa),
-            modelo: vehicle.modelo,
-            marca: vehicle.marca,
-            ano: String(vehicle.ano),
-            cor: vehicle.cor ?? "",
-            quilometragem: maskIntegerInput(String(vehicle.quilometragem)),
-            valorDiaria: formatCurrencyValue(vehicle.valorDiaria),
-            valorKM: vehicle.valorKM != null ? formatCurrencyValue(vehicle.valorKM) : "",
-            status: vehicle.status,
-            categoriaId: String(vehicle.categoria?.id ?? ""),
-          });
-        }
+        const vehicle = await getVeiculo(editId);
+        setForm(toFormState(vehicle));
+        setCacheState("Veículo atualizado online");
       } catch (err) {
-        if (alive) {
+        if (!cachedVehicle) {
           setError(
             err instanceof Error
               ? err.message
               : "Falha ao carregar formulário.",
           );
+        } else {
+          setCacheState("Usando veículo em cache");
         }
-      } finally {
-        if (alive) setLoading(false);
       }
     }
 
-    void load();
-    return () => {
-      alive = false;
-    };
-  }, [editId]);
+    setLoading(false);
+    setHydrated(true);
+  }, [draftKey, editId, toFormState]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void (async () => {
+        await syncPendingMutations();
+        await load();
+      })();
+    }, [load]),
+  );
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+
+    if (skipDraftSaveRef.current) {
+      skipDraftSaveRef.current = false;
+      return;
+    }
+
+    void saveVehicleDraft(draftKey, form);
+  }, [draftKey, form, hydrated]);
 
   function updateField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -179,18 +301,26 @@ export default function VehicleFormScreen() {
     };
 
     try {
-      if (editId) {
-        await updateVeiculo(editId, payload);
+      const result = editId
+        ? await updateVeiculo(editId, payload)
+        : await createVeiculo(payload);
+
+      if (isPendingSyncResult(result)) {
+        setMessage(result.message);
+      } else if (editId) {
         setMessage("Veículo atualizado com sucesso.");
       } else {
-        await createVeiculo(payload);
         setMessage("Veículo cadastrado com sucesso.");
         setForm(defaultState);
       }
+
+      skipDraftSaveRef.current = true;
+      await clearVehicleDraft(draftKey);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao salvar veículo.");
     } finally {
       setSaving(false);
+      void refreshSummary();
     }
   }
 
@@ -210,6 +340,13 @@ export default function VehicleFormScreen() {
       <Text style={styles.title}>
         {editId ? "Atualize a frota" : "Cadastre um veículo"}
       </Text>
+
+      {cacheState ? <Text style={styles.banner}>{cacheState}</Text> : null}
+      {summary?.hasPending ? (
+        <Text style={styles.bannerWarning}>
+          Há {summary.pending} operação(ões) aguardando sincronização.
+        </Text>
+      ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {message ? <Text style={styles.success}>{message}</Text> : null}
@@ -237,7 +374,9 @@ export default function VehicleFormScreen() {
         <Field
           label="Ano"
           value={form.ano}
-          onChangeText={(value) => updateField("ano", digitsOnly(value).slice(0, 4))}
+          onChangeText={(value) =>
+            updateField("ano", digitsOnly(value).slice(0, 4))
+          }
           keyboardType="numeric"
           maxLength={4}
           containerStyle={styles.rowItem}
@@ -254,14 +393,18 @@ export default function VehicleFormScreen() {
         <Field
           label="Quilometragem"
           value={form.quilometragem}
-          onChangeText={(value) => updateField("quilometragem", maskIntegerInput(value))}
+          onChangeText={(value) =>
+            updateField("quilometragem", maskIntegerInput(value))
+          }
           keyboardType="numeric"
           containerStyle={styles.rowItem}
         />
         <Field
           label="Valor diária"
           value={form.valorDiaria}
-          onChangeText={(value) => updateField("valorDiaria", maskCurrencyInput(value))}
+          onChangeText={(value) =>
+            updateField("valorDiaria", maskCurrencyInput(value))
+          }
           keyboardType="numeric"
           containerStyle={styles.rowItem}
         />
@@ -270,7 +413,9 @@ export default function VehicleFormScreen() {
       <Field
         label="Valor KM"
         value={form.valorKM}
-        onChangeText={(value) => updateField("valorKM", maskCurrencyInput(value))}
+        onChangeText={(value) =>
+          updateField("valorKM", maskCurrencyInput(value))
+        }
         keyboardType="numeric"
       />
 
@@ -474,6 +619,18 @@ const styles = StyleSheet.create({
   secondaryButtonText: {
     color: "#0f172a",
     fontWeight: "700",
+  },
+  banner: {
+    color: "#0f172a",
+    backgroundColor: "#e0f2fe",
+    padding: 12,
+    borderRadius: 12,
+  },
+  bannerWarning: {
+    color: "#92400e",
+    backgroundColor: "#fef3c7",
+    padding: 12,
+    borderRadius: 12,
   },
   error: {
     color: "#b91c1c",

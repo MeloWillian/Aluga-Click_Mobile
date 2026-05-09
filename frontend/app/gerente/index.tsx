@@ -11,21 +11,69 @@ import {
   View,
 } from "react-native";
 
-import { listFrota, type Veiculo } from "../../lib/rental-api";
+import {
+  clearOfflineData,
+  listFrota,
+  readCachedFrota,
+  readOfflineSummary,
+  syncPendingMutations,
+  type PendingMutationSummary,
+  type Veiculo,
+} from "../../lib/rental-api";
 
 export default function GerenteHome() {
   const [veiculos, setVeiculos] = useState<Veiculo[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cacheState, setCacheState] = useState<string | null>(null);
+  const [summary, setSummary] = useState<PendingMutationSummary | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
+    let cacheErrorMessage: string | null = null;
+
+    const [cachedResult, summaryResult] = await Promise.allSettled([
+      readCachedFrota(),
+      readOfflineSummary(),
+    ]);
+
+    const cached =
+      cachedResult.status === "fulfilled" ? cachedResult.value : null;
+    const offlineSummary =
+      summaryResult.status === "fulfilled"
+        ? summaryResult.value
+        : { total: 0, pending: 0, failed: 0, hasPending: false };
+
+    if (cachedResult.status === "rejected" && cachedResult.reason instanceof Error) {
+      cacheErrorMessage = cachedResult.reason.message;
+    }
+
+    setSummary(offlineSummary);
+
+    if (cached) {
+      setVeiculos(cached.data);
+      setCacheState(cached.isStale ? "Cache desatualizado" : "Cache local");
+      setLoading(false);
+    }
+
     try {
       const data = await listFrota();
       setVeiculos(data);
+      setCacheState(
+        cacheErrorMessage
+          ? "Atualizado online após ignorar cache corrompido"
+          : "Atualizado online",
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao carregar frota.");
+      if (!cached) {
+        setError(
+          cacheErrorMessage ??
+            (err instanceof Error ? err.message : "Falha ao carregar frota."),
+        );
+      } else {
+        setCacheState("Usando dados em cache");
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -34,7 +82,10 @@ export default function GerenteHome() {
 
   useFocusEffect(
     useCallback(() => {
-      void load();
+      void (async () => {
+        await syncPendingMutations();
+        await load();
+      })();
     }, [load]),
   );
 
@@ -65,6 +116,27 @@ export default function GerenteHome() {
       >
         <Text style={styles.primaryButtonText}>Novo veículo</Text>
       </Pressable>
+
+      <Pressable
+        style={styles.secondaryButton}
+        onPress={async () => {
+          await clearOfflineData();
+          setVeiculos([]);
+          setCacheState("Dados offline limpos");
+          setSummary({ total: 0, pending: 0, failed: 0, hasPending: false });
+          await load();
+        }}
+      >
+        <Text style={styles.secondaryButtonText}>Limpar dados offline</Text>
+      </Pressable>
+
+      {cacheState ? <Text style={styles.banner}>{cacheState}</Text> : null}
+      {summary?.hasPending ? (
+        <Text style={styles.bannerWarning}>
+          Sincronização pendente: {summary.pending} aguardando e{" "}
+          {summary.failed} falhas.
+        </Text>
+      ) : null}
 
       {loading ? (
         <ActivityIndicator color="#38bdf8" />
@@ -161,15 +233,27 @@ const styles = StyleSheet.create({
     color: "#475569",
   },
   secondaryButton: {
-    marginTop: 8,
-    borderRadius: 14,
-    paddingVertical: 10,
-    alignItems: "center",
     backgroundColor: "#e2e8f0",
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
   },
   secondaryButtonText: {
     color: "#0f172a",
     fontWeight: "700",
+  },
+  banner: {
+    color: "#0f172a",
+    backgroundColor: "#e0f2fe",
+    padding: 12,
+    marginTop: 8,
+    borderRadius: 12,
+  },
+  bannerWarning: {
+    color: "#92400e",
+    backgroundColor: "#fef3c7",
+    padding: 12,
+    borderRadius: 12,
   },
   empty: {
     color: "#64748b",

@@ -1,6 +1,9 @@
+import { useFocusEffect } from "@react-navigation/native";
 import {
   useEffect,
   useMemo,
+  useCallback,
+  useRef,
   useState,
   type ComponentProps,
   type ReactNode,
@@ -22,11 +25,22 @@ import {
   maskTimeInput,
   timeInputToIsoTime,
 } from "../../lib/input-masks";
+import { Link } from "expo-router";
 import {
+  clearClientSearchDraft,
   createReserva,
+  isPendingSyncResult,
   listCategorias,
+  readCachedAvailability,
+  readCachedCategorias,
+  readClientSearchDraft,
+  readOfflineSummary,
+  saveClientSearchDraft,
   searchAvailableVehicles,
+  syncPendingMutations,
   type Categoria,
+  type PendingMutationSummary,
+  type ReservaFiltro,
   type Veiculo,
 } from "../../lib/rental-api";
 
@@ -70,18 +84,121 @@ export default function ClientHome() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [categoriesState, setCategoriesState] = useState<string | null>(null);
+  const [resultsState, setResultsState] = useState<string | null>(null);
+  const [summary, setSummary] = useState<PendingMutationSummary | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const skipDraftSaveRef = useRef(false);
+
+  const refreshSummary = useCallback(async () => {
+    setSummary(await readOfflineSummary());
+  }, []);
+
+  const load = useCallback(async () => {
+    setError(null);
+    let cacheErrorMessage: string | null = null;
+
+    const [categoriesResult, snapshotResult, summaryResult] =
+      await Promise.allSettled([
+        readCachedCategorias(),
+        readClientSearchDraft(),
+        readOfflineSummary(),
+      ]);
+
+    const cachedCategories =
+      categoriesResult.status === "fulfilled" ? categoriesResult.value : null;
+    const cachedSnapshot =
+      snapshotResult.status === "fulfilled" ? snapshotResult.value : null;
+
+    if (
+      categoriesResult.status === "rejected" &&
+      categoriesResult.reason instanceof Error
+    ) {
+      cacheErrorMessage = categoriesResult.reason.message;
+    } else if (
+      snapshotResult.status === "rejected" &&
+      snapshotResult.reason instanceof Error
+    ) {
+      cacheErrorMessage = snapshotResult.reason.message;
+    }
+
+    setSummary(
+      summaryResult.status === "fulfilled"
+        ? summaryResult.value
+        : { total: 0, pending: 0, failed: 0, hasPending: false },
+    );
+
+    if (cachedCategories) {
+      setCategories(cachedCategories.data);
+      setCategoriesState(
+        cachedCategories.isStale
+          ? "Categorias desatualizadas"
+          : "Categorias em cache",
+      );
+    }
+
+    if (cachedSnapshot) {
+      setSearch(cachedSnapshot.search);
+      setReservation(cachedSnapshot.reservation);
+      setVehicles(cachedSnapshot.vehicles);
+      setSelectedVehicleId(cachedSnapshot.selectedVehicleId);
+      setResultsState(
+        cachedSnapshot.vehicles.length > 0
+          ? "Resultados restaurados do dispositivo"
+          : "Busca restaurada sem resultados",
+      );
+    }
+
+    try {
+      const freshCategories = await listCategorias();
+      setCategories(freshCategories);
+      setCategoriesState(
+        cacheErrorMessage
+          ? "Categorias atualizadas online após ignorar cache corrompido"
+          : "Categorias atualizadas online",
+      );
+    } catch (err) {
+      if (!cachedCategories) {
+        setError(
+          cacheErrorMessage ??
+            (err instanceof Error
+              ? err.message
+              : "Falha ao carregar categorias."),
+        );
+      } else {
+        setCategoriesState("Usando categorias em cache");
+      }
+    } finally {
+      setHydrated(true);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      void (async () => {
+        await syncPendingMutations();
+        await load();
+      })();
+    }, [load]),
+  );
 
   useEffect(() => {
-    void (async () => {
-      try {
-        setCategories(await listCategorias());
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Falha ao carregar categorias.",
-        );
-      }
-    })();
-  }, []);
+    if (!hydrated) {
+      return;
+    }
+
+    if (skipDraftSaveRef.current) {
+      skipDraftSaveRef.current = false;
+      return;
+    }
+
+    void saveClientSearchDraft({
+      search,
+      reservation,
+      selectedVehicleId,
+      vehicles,
+    });
+  }, [hydrated, reservation, search, selectedVehicleId, vehicles]);
 
   const hasResults = useMemo(() => vehicles.length > 0, [vehicles]);
 
@@ -122,26 +239,52 @@ export default function ClientHome() {
       return;
     }
 
+    const filtro: ReservaFiltro = {
+      dataInicial: dataInicio,
+      dataFim,
+      categoriaId: Number(search.categoriaId),
+    };
+
     setSearching(true);
     try {
-      const found = await searchAvailableVehicles({
-        dataInicial: dataInicio,
-        dataFim,
-        categoriaId: Number(search.categoriaId),
-      });
+      const found = await searchAvailableVehicles(filtro);
 
       setVehicles(found);
-      setSelectedVehicleId(
-        found.length > 0 ? String((found[0] as Veiculo).id) : "",
-      );
+      setSelectedVehicleId(found.length > 0 ? String(found[0].id) : "");
+      setResultsState("Resultados atualizados online");
     } catch (err) {
-      setVehicles([]);
-      setSelectedVehicleId("");
-      setError(
-        err instanceof Error ? err.message : "Falha ao buscar veículos.",
-      );
+      try {
+        const cached = await readCachedAvailability(filtro);
+
+        if (cached) {
+          setVehicles(cached.data);
+          setSelectedVehicleId(
+            cached.data.length > 0 ? String(cached.data[0].id) : "",
+          );
+          setResultsState(
+            cached.isStale
+              ? "Usando resultados em cache desatualizados"
+              : "Usando resultados em cache",
+          );
+        } else {
+          setVehicles([]);
+          setSelectedVehicleId("");
+          setError(
+            err instanceof Error ? err.message : "Falha ao buscar veículos.",
+          );
+        }
+      } catch (cacheErr) {
+        setVehicles([]);
+        setSelectedVehicleId("");
+        setError(
+          cacheErr instanceof Error
+            ? cacheErr.message
+            : "Falha ao ler cache de disponibilidade.",
+        );
+      }
     } finally {
       setSearching(false);
+      void refreshSummary();
     }
   }
 
@@ -172,28 +315,51 @@ export default function ClientHome() {
         return;
       }
 
-      const createdReserva = await createReserva({
-        dataInicio,
-        dataFim,
-        tipoCobranca: reservation.tipoCobranca,
-        cliente: { id: Number(reservation.clienteId), tipoUsuario: "CLIENTE" },
-        veiculo: { id: Number(selectedVehicleId) },
-        status: "PENDENTE",
-      });
+      const createdReserva = await createReserva(
+        {
+          dataInicio,
+          dataFim,
+          tipoCobranca: reservation.tipoCobranca,
+          cliente: {
+            id: Number(reservation.clienteId),
+            tipoUsuario: "CLIENTE",
+          },
+          veiculo: { id: Number(selectedVehicleId) },
+          status: "PENDENTE",
+        },
+        {
+          availabilityFilter: {
+            dataInicial: dataInicio,
+            dataFim,
+            categoriaId: Number(search.categoriaId),
+          },
+        },
+      );
 
-      if (!createdReserva || typeof createdReserva !== "object" || !("id" in createdReserva)) {
+      if (isPendingSyncResult(createdReserva)) {
+        setSuccess(createdReserva.message);
+      } else if (
+        !createdReserva ||
+        typeof createdReserva !== "object" ||
+        !("id" in createdReserva)
+      ) {
         throw new Error("Reserva não confirmada pelo servidor.");
+      } else {
+        setSuccess("Reserva criada com status pendente.");
       }
 
       setSearch(defaultSearchState);
       setReservation(defaultReservationState);
       setVehicles([]);
       setSelectedVehicleId("");
-      setSuccess("Reserva criada com status pendente.");
+      setResultsState(null);
+      skipDraftSaveRef.current = true;
+      await clearClientSearchDraft();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao criar reserva.");
     } finally {
       setSaving(false);
+      void refreshSummary();
     }
   }
 
@@ -206,6 +372,24 @@ export default function ClientHome() {
           Data, hora, categoria e veículo disponível.
         </Text>
       </View>
+
+      <Link href="/cliente/reservas" asChild>
+        <Pressable style={styles.secondaryNavButton}>
+          <Text style={styles.secondaryNavButtonText}>Ver minhas reservas</Text>
+        </Pressable>
+      </Link>
+
+      {categoriesState ? (
+        <Text style={styles.banner}>{categoriesState}</Text>
+      ) : null}
+      {resultsState ? (
+        <Text style={styles.bannerSecondary}>{resultsState}</Text>
+      ) : null}
+      {summary?.hasPending ? (
+        <Text style={styles.bannerWarning}>
+          Há {summary.pending} ação(ões) aguardando sincronização.
+        </Text>
+      ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {success ? <Text style={styles.success}>{success}</Text> : null}
@@ -527,6 +711,16 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "700",
   },
+  secondaryNavButton: {
+    backgroundColor: "#e2e8f0",
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  secondaryNavButtonText: {
+    color: "#0f172a",
+    fontWeight: "700",
+  },
   resultCard: {
     borderRadius: 16,
     padding: 14,
@@ -551,6 +745,24 @@ const styles = StyleSheet.create({
   },
   helper: {
     color: "#475569",
+  },
+  banner: {
+    color: "#0f172a",
+    backgroundColor: "#e0f2fe",
+    padding: 12,
+    borderRadius: 12,
+  },
+  bannerSecondary: {
+    color: "#0f172a",
+    backgroundColor: "#ecfccb",
+    padding: 12,
+    borderRadius: 12,
+  },
+  bannerWarning: {
+    color: "#92400e",
+    backgroundColor: "#fef3c7",
+    padding: 12,
+    borderRadius: 12,
   },
   error: {
     color: "#b91c1c",
