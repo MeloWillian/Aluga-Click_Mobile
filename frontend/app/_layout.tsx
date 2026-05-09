@@ -1,6 +1,13 @@
+import { useEffect } from "react";
 import { Stack } from "expo-router";
 
+import { syncPendingMutations } from "../lib/rental-api";
+
 export default function RootLayout() {
+  useEffect(() => {
+    void syncPendingMutations();
+  }, []);
+
   return (
     <Stack>
       <Stack.Screen
