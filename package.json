@@ -3,14 +3,10 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "concurrently --raw -n \"DOCKER,BACK,FRONT\" -c \"blue,green,magenta\" \"pnpm:db:up\" \"pnpm:back\" \"pnpm:front\"",
-
     "db:up": "docker compose up",
     "db:down": "docker compose down",
-
     "back": "docker run --rm --network host -v \"$PWD\":/app -w /app -v \"$HOME/.m2\":/root/.m2 maven:3-eclipse-temurin-21 mvn spring-boot:run",
-
     "front": "pnpm --dir frontend start",
-
     "setup": "pnpm install && pnpm --dir frontend install && printf 'NEXT_PUBLIC_BASE_URL=http://localhost:8080\n' > frontend/.env"
   },
   "dependencies": {
