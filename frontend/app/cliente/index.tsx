@@ -29,12 +29,13 @@ import { Link } from "expo-router";
 import {
   clearClientSearchDraft,
   createReserva,
-  isPendingSyncResult,
+  checkServerConnectivity,
   listCategorias,
   readCachedAvailability,
   readCachedCategorias,
   readClientSearchDraft,
   readOfflineSummary,
+  RESERVATION_OFFLINE_ERROR,
   saveClientSearchDraft,
   searchAvailableVehicles,
   syncPendingMutations,
@@ -88,6 +89,8 @@ export default function ClientHome() {
   const [resultsState, setResultsState] = useState<string | null>(null);
   const [summary, setSummary] = useState<PendingMutationSummary | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
+  const [connectivityChecked, setConnectivityChecked] = useState(false);
   const skipDraftSaveRef = useRef(false);
 
   const refreshSummary = useCallback(async () => {
@@ -175,10 +178,30 @@ export default function ClientHome() {
 
   useFocusEffect(
     useCallback(() => {
+      let active = true;
+
+      setConnectivityChecked(false);
+
       void (async () => {
-        await syncPendingMutations();
+        const online = await checkServerConnectivity();
+
+        if (!active) {
+          return;
+        }
+
+        setIsOnline(online);
+        setConnectivityChecked(true);
+
+        if (online) {
+          await syncPendingMutations();
+        }
+
         await load();
       })();
+
+      return () => {
+        active = false;
+      };
     }, [load]),
   );
 
@@ -292,6 +315,11 @@ export default function ClientHome() {
     setError(null);
     setSuccess(null);
 
+    if (!isOnline) {
+      setError(RESERVATION_OFFLINE_ERROR);
+      return;
+    }
+
     if (
       !search.dataInicio ||
       !search.horaInicio ||
@@ -336,9 +364,7 @@ export default function ClientHome() {
         },
       );
 
-      if (isPendingSyncResult(createdReserva)) {
-        setSuccess(createdReserva.message);
-      } else if (
+      if (
         !createdReserva ||
         typeof createdReserva !== "object" ||
         !("id" in createdReserva)
@@ -500,14 +526,29 @@ export default function ClientHome() {
         <Text style={styles.helper}>
           Veículo selecionado: {selectedVehicleId || "nenhum"}
         </Text>
+        {connectivityChecked && !isOnline ? (
+          <Text style={styles.helperWarning}>
+            Criação de reserva indisponível offline.
+          </Text>
+        ) : null}
 
         <Pressable
-          style={styles.primaryButton}
+          style={[
+            styles.primaryButton,
+            (!connectivityChecked || !isOnline || saving) &&
+              styles.primaryButtonDisabled,
+          ]}
           onPress={handleReserve}
-          disabled={saving}
+          disabled={saving || !connectivityChecked || !isOnline}
         >
           <Text style={styles.primaryButtonText}>
-            {saving ? "Enviando..." : "Criar reserva"}
+            {saving
+              ? "Enviando..."
+              : !connectivityChecked
+                ? "Verificando..."
+                : !isOnline
+                  ? "Offline"
+                  : "Criar reserva"}
           </Text>
         </Pressable>
       </Section>
@@ -707,6 +748,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: "center",
   },
+  primaryButtonDisabled: {
+    backgroundColor: "#94a3b8",
+  },
   primaryButtonText: {
     color: "#fff",
     fontWeight: "700",
@@ -745,6 +789,9 @@ const styles = StyleSheet.create({
   },
   helper: {
     color: "#475569",
+  },
+  helperWarning: {
+    color: "#b45309",
   },
   banner: {
     color: "#0f172a",

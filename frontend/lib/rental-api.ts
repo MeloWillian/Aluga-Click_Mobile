@@ -22,6 +22,8 @@ export type { PendingMutationSummary } from "./offline-storage";
 export { clearOfflineData } from "./offline-storage";
 
 const DEFAULT_BASE_URL = "http://localhost:8080";
+export const RESERVATION_OFFLINE_ERROR =
+  "Sem conexão. Não é possível criar reserva offline.";
 
 export type Categoria = {
   id: number;
@@ -198,6 +200,23 @@ function isNetworkUnavailableError(error: unknown) {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Falha inesperada.";
+}
+
+export async function checkServerConnectivity(timeoutMs = 3000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    await fetch(getBaseUrl(), {
+      method: "GET",
+      signal: controller.signal,
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function request<T>(path: string, init: RequestInit = {}) {
@@ -404,9 +423,10 @@ async function submitReservation(
   return created;
 }
 
-let syncPendingMutationsInFlight:
-  | Promise<{ synced: number; failed: number }>
-  | null = null;
+let syncPendingMutationsInFlight: Promise<{
+  synced: number;
+  failed: number;
+}> | null = null;
 
 export async function readCachedCategorias() {
   return readCachedEntry<Categoria[]>(OFFLINE_KEYS.categorias);
@@ -569,7 +589,7 @@ export async function searchAvailableVehicles(filtro: ReservaFiltro) {
 export async function createReserva(
   payload: ReservaPayload,
   options?: { availabilityFilter?: ReservaFiltro },
-): Promise<unknown | PendingSyncResult> {
+): Promise<unknown> {
   try {
     return await submitReservation(
       payload,
@@ -582,42 +602,7 @@ export async function createReserva(
       throw error;
     }
 
-    const mutation = await enqueuePendingMutation({
-      type: "createReservation",
-      payload: {
-        reservation: payload,
-        availabilityFilter: options?.availabilityFilter ?? null,
-      },
-    });
-
-    try {
-      await upsertClientReservationsCache(
-        payload.cliente.id,
-        toCachedReserva(payload, {
-          id: `local-${mutation.id}`,
-          status: payload.status ?? "PENDENTE",
-          tipoCobranca: payload.tipoCobranca,
-          cliente: {
-            id: payload.cliente.id,
-          },
-          veiculo: {
-            id: payload.veiculo.id,
-          },
-          localOnly: true,
-          syncState: "pending",
-          localMutationId: mutation.id,
-        }),
-      );
-    } catch {
-      // Queue entry is still enough to retry later.
-    }
-
-    return {
-      queued: true,
-      mutationId: mutation.id,
-      message:
-        "Reserva salva localmente para sincronização quando a rede voltar.",
-    };
+    throw new Error(RESERVATION_OFFLINE_ERROR);
   }
 }
 
@@ -627,68 +612,68 @@ export async function syncPendingMutations() {
   }
 
   syncPendingMutationsInFlight = (async () => {
-  const queue = await readJson<PendingMutation[]>(OFFLINE_KEYS.queue);
+    const queue = await readJson<PendingMutation[]>(OFFLINE_KEYS.queue);
 
-  if (!queue || queue.length === 0) {
-    return { synced: 0, failed: 0 };
-  }
-
-  let synced = 0;
-  let failed = 0;
-
-  for (const mutation of queue) {
-    if (mutation.status === "failed") {
-      continue;
+    if (!queue || queue.length === 0) {
+      return { synced: 0, failed: 0 };
     }
 
-    try {
-      if (mutation.type === "createVehicle") {
-        const payload = mutation.payload as { vehicle: VeiculoPayload };
-        await submitVehicleCreate(payload.vehicle);
-      } else if (mutation.type === "updateVehicle") {
-        const payload = mutation.payload as {
-          id: number;
-          vehicle: VeiculoPayload;
-        };
-        await submitVehicleUpdate(payload.id, payload.vehicle);
-      } else if (mutation.type === "createReservation") {
-        const payload = mutation.payload as {
-          reservation: ReservaPayload;
-          availabilityFilter: ReservaFiltro | null;
-        };
+    let synced = 0;
+    let failed = 0;
 
-        await submitReservation(
-          payload.reservation,
-          payload.availabilityFilter
-            ? createAvailabilityKey(payload.availabilityFilter)
-            : undefined,
-          { localMutationId: mutation.id },
-        );
+    for (const mutation of queue) {
+      if (mutation.status === "failed") {
+        continue;
       }
 
-      await removePendingMutation(mutation.id);
-      synced += 1;
-    } catch (error) {
-      if (isNetworkUnavailableError(error)) {
+      try {
+        if (mutation.type === "createVehicle") {
+          const payload = mutation.payload as { vehicle: VeiculoPayload };
+          await submitVehicleCreate(payload.vehicle);
+        } else if (mutation.type === "updateVehicle") {
+          const payload = mutation.payload as {
+            id: number;
+            vehicle: VeiculoPayload;
+          };
+          await submitVehicleUpdate(payload.id, payload.vehicle);
+        } else if (mutation.type === "createReservation") {
+          const payload = mutation.payload as {
+            reservation: ReservaPayload;
+            availabilityFilter: ReservaFiltro | null;
+          };
+
+          await submitReservation(
+            payload.reservation,
+            payload.availabilityFilter
+              ? createAvailabilityKey(payload.availabilityFilter)
+              : undefined,
+            { localMutationId: mutation.id },
+          );
+        }
+
+        await removePendingMutation(mutation.id);
+        synced += 1;
+      } catch (error) {
+        if (isNetworkUnavailableError(error)) {
+          await setPendingMutationStatus(
+            mutation.id,
+            "pending",
+            "Sem conexão com o servidor.",
+          );
+          break;
+        }
+
         await setPendingMutationStatus(
           mutation.id,
-          "pending",
-          "Sem conexão com o servidor.",
+          "failed",
+          getErrorMessage(error),
         );
+        failed += 1;
         break;
       }
-
-      await setPendingMutationStatus(
-        mutation.id,
-        "failed",
-        getErrorMessage(error),
-      );
-      failed += 1;
-      break;
     }
-  }
 
-  return { synced, failed };
+    return { synced, failed };
   })();
 
   try {
